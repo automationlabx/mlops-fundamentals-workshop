@@ -1,5 +1,7 @@
 # MLOps Fundamentals Workshop
 
+[![MLOps Workshop Verification](https://github.com/<automationlabx>/<mlops-fundamentals-workshop>/actions/workflows/workshop-verification.yml/badge.svg)](https://github.com/<automationlabx>/<mlops-fundamentals-workshop>/actions/workflows/workshop-verification.yml)
+
 A local-first hands-on project for practising the core MLOps lifecycle without Docker or cloud deployment.
 
 The workshop covers:
@@ -18,7 +20,7 @@ The workshop covers:
 
 ## Local setup
 
-Use the participant Workshop Guide distributed by the instructor and work through the exercises in order.
+Use the participant Workshop Guide and work through the exercises in order.
 
 ```text
 python -m venv .venv

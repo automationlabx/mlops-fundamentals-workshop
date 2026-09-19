@@ -1,0 +1,156 @@
+# .github/workflows/workshop-verification.yml
+name: MLOps Workshop Verification
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Verify repository hygiene
+        id: hygiene
+        shell: bash
+        run: |
+          BAD_FILES=$(git ls-files '.venv/*' 'venv/*' 'mlruns/*' 'mlartifacts/*' 'mlflow.db' 'models/*.joblib' 'models/*.json' 'data/churn.csv' 'data/reference_stats.json' 'monitoring/predictions.csv' 'monitoring/*.html' 'candidate.json' 'passing_candidate.json' '*.docx' '*.pptx' '*.log' '__pycache__/*' '*.pyc')
+          if [ -n "$BAD_FILES" ]; then
+            echo "Generated/runtime/distributed course files are committed:"
+            echo "$BAD_FILES"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Clean generated state
+        run: |
+          rm -rf mlflow.db mlruns mlartifacts candidate.json passing_candidate.json
+          rm -f models/*.joblib models/*.json monitoring/predictions.csv monitoring/*.html
+          rm -f data/churn.csv data/reference_stats.json *.log
+
+      - name: Verify participant-added API test
+        id: participant_test
+        run: grep -q "^def test_spend_out_of_range_is_rejected" tests/test_api.py
+
+      - name: Generate and validate data
+        id: data
+        run: |
+          python make_data.py | tee data.log
+          python -m pytest tests/test_data.py -q
+
+      - name: Train baseline and candidate
+        id: train
+        run: |
+          python train.py --kind logreg --run-name baseline
+          python train.py --kind rf --run-name rf_candidate --max-depth 6 --n-estimators 200 --candidate
+          cp candidate.json passing_candidate.json
+
+      - name: Promote the passing candidate
+        id: promote
+        run: python promote.py
+
+      - name: Run the complete quality checks
+        id: tests
+        run: python run_checks.py
+
+      - name: Verify weak candidate rejection
+        id: reject
+        shell: bash
+        run: |
+          set -o pipefail
+          python train.py --kind weak_rf --run-name intentionally_bad --candidate
+          if python promote.py | tee promote_weak.log; then
+            echo "ERROR: weak candidate was promoted"
+            exit 1
+          fi
+          grep -q "^FAIL - candidate version" promote_weak.log
+          WEAK_VERSION=$(python -c 'import json; print(json.load(open("candidate.json"))["version"])')
+          if python rollback.py --version "$WEAK_VERSION"; then
+            echo "ERROR: rollback accepted a version that failed the promotion gate"
+            exit 1
+          fi
+
+      - name: Verify rollback
+        id: rollback
+        shell: bash
+        run: |
+          PASSING_VERSION=$(python - <<'PY'
+          import json
+          print(json.load(open("passing_candidate.json"))["version"])
+          PY
+          )
+          python train.py --kind rf --run-name rf_candidate_v2 --max-depth 8 --n-estimators 300 --candidate
+          python promote.py
+          python rollback.py --version "$PASSING_VERSION"
+          CHAMPION_VERSION=$(python - <<'PY'
+          import mlflow
+          from mlflow import MlflowClient
+          mlflow.set_tracking_uri("sqlite:///mlflow.db")
+          client = MlflowClient(tracking_uri="sqlite:///mlflow.db")
+          print(client.get_model_version_by_alias("churn-workshop-model", "champion").version)
+          PY
+          )
+          test "$CHAMPION_VERSION" = "$PASSING_VERSION"
+
+      - name: Verify dashboard, monitoring and drift signal
+        id: monitoring
+        shell: bash
+        run: |
+          rm -f monitoring/predictions.csv
+          uvicorn serve:app --port 8000 > uvicorn.log 2>&1 &
+          API_PID=$!
+          trap 'kill $API_PID || true' EXIT
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:8000/health; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/dashboard | grep -q "MLOps Workshop Dashboard"
+          curl -fsS http://127.0.0.1:8000/status-data | grep -q '"serving_matches_registry":true'
+          python generate_traffic.py --profile normal --requests 40
+          python monitor.py | tee monitor_normal.log
+          grep -q "OK: no numeric feature crossed" monitor_normal.log
+          rm -f monitoring/predictions.csv
+          python generate_traffic.py --profile shifted --requests 40
+          python monitor.py | tee monitor_shifted.log
+          grep -q "ALERT: possible drift" monitor_shifted.log
+
+      - name: Write verification summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## MLOps Workshop Verification"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Repository hygiene | ${{ steps.hygiene.outcome }} |"
+            echo "| Participant-added API test | ${{ steps.participant_test.outcome }} |"
+            echo "| Data generation and validation | ${{ steps.data.outcome }} |"
+            echo "| Baseline and candidate training | ${{ steps.train.outcome }} |"
+            echo "| Candidate promotion | ${{ steps.promote.outcome }} |"
+            echo "| Complete quality checks | ${{ steps.tests.outcome }} |"
+            echo "| Weak candidate rejection | ${{ steps.reject.outcome }} |"
+            echo "| Rollback | ${{ steps.rollback.outcome }} |"
+            echo "| Dashboard, monitoring and drift signal | ${{ steps.monitoring.outcome }} |"
+            echo ""
+            echo "Commit: \`${GITHUB_SHA}\`"
+            echo ""
+            echo "The workflow run status is the certificate source of truth: green = PASS, red = FAIL."
+          } >> "$GITHUB_STEP_SUMMARY"
