@@ -1,6 +1,6 @@
 # MLOps Fundamentals Workshop
 
-[![MLOps Workshop Verification](https://github.com/<automationlabx>/<mlops-fundamentals-workshop>/actions/workflows/workshop-verification.yml/badge.svg)](https://github.com/<automationlabx>/<mlops-fundamentals-workshop>/actions/workflows/workshop-verification.yml)
+[![MLOps Workshop Verification](https://github.com/automationlabx/mlops-fundamentals-workshop/actions/workflows/workshop-verification.yml/badge.svg)](https://github.com/automationlabx/mlops-fundamentals-workshop/actions/workflows/workshop-verification.yml)
 
 A local-first hands-on project for practising the core MLOps lifecycle without Docker or cloud deployment.
 
